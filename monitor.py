@@ -161,9 +161,12 @@ def main():
         try:
             feed = feedparser.parse(url)
             for entry in feed.entries[:4]:
-                uid = entry.get("id") or entry.get("link") or entry.get("title")
-                if uid and uid not in seen:
-                    new_entries.append((uid, f"[{source}] {entry.get('title', '')} - {entry.get('summary', '')[:300]}"))
+                base_id = entry.get("id") or entry.get("link") or entry.get("title")
+                updated = entry.get("updated") or entry.get("published") or ""
+                title = entry.get("title", "")
+                uid = f"{base_id}-{updated}-{title}"
+                if base_id and uid not in seen:
+                    new_entries.append((uid, f"[{source}] {title} - {entry.get('summary', '')[:300]}"))
         except Exception:
             pass
 
@@ -234,4 +237,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+                
