@@ -1,0 +1,38 @@
+name: West Cumbria EWS Monitor
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check-alerts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install libraries
+        run: pip install requests feedparser google-genai
+
+      - name: Run Early Warning Agent
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python monitor.py
+
+      - name: Save seen alerts memory
+        run: |
+          git config user.name "ews-bot"
+          git config user.email "ews-bot@users.noreply.github.com"
+          git add seen_alerts.json || true
+          git diff --staged --quiet || git commit -m "Update seen alerts state"
+          git push
