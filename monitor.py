@@ -25,7 +25,7 @@ STATE_FILE = "seen_alerts.json"
 def fetch_json(url, timeout=20, retries=3):
     for attempt in range(retries):
         try:
-            r = requests.get(url, timeout=timeout, headers={"User-Agent": "Cumbria-EWS/2.1"})
+            r = requests.get(url, timeout=timeout, headers={"User-Agent": "Cumbria-EWS/2.2"})
             r.raise_for_status()
             return r.json()
         except Exception as e:
@@ -39,11 +39,12 @@ def load_state():
             with open(STATE_FILE, "r") as f:
                 data = json.load(f)
                 if isinstance(data, list):
-                    return {"seen": data, "recent_log": [], "last_heartbeat": ""}
+                    return {"seen": data, "recent_log": [], "last_heartbeat": "", "river_levels": {}}
+                data.setdefault("river_levels", {})
                 return data
         except Exception:
             pass
-    return {"seen": [], "recent_log": [], "last_heartbeat": ""}
+    return {"seen": [], "recent_log": [], "last_heartbeat": "", "river_levels": {}}
 
 def save_state(state):
     state["seen"] = state["seen"][-600:]
@@ -51,7 +52,7 @@ def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
 
-def get_telemetry_and_tripwires():
+def get_telemetry_and_tripwires(state):
     context = []
     tripwires = []
 
@@ -78,7 +79,7 @@ def get_telemetry_and_tripwires():
     except Exception:
         context.append("Weather sensor: Temporarily busy (will re-check in 15 mins)")
 
-    # 2. Upstream & Town River Gauges / Hard Flood Tripwires
+    # 2. Upstream & Town River Gauges / Hard Flood & Velocity Tripwires
     stations = {
         "Cocker (Scalehill Upstream)": ("750160", 0.97),
         "Bassenthwaite Lake (Castle Howe)": ("751020", 2.07),
@@ -86,19 +87,31 @@ def get_telemetry_and_tripwires():
         "Derwent (Ouse Bridge)": ("751110", 2.10),
         "River Cocker (Town)": ("751690", 1.80)
     }
+    prev_levels = state.get("river_levels", {})
+    new_levels = dict(prev_levels)
     levels = []
+    hour_stamp = datetime.now(timezone.utc).strftime('%Y%m%d%H')
+
     for name, (st_id, threshold) in stations.items():
         try:
             r = fetch_json(f"https://environment.data.gov.uk/flood-monitoring/id/stations/{st_id}/measures", timeout=15, retries=2)
             for m in r.get("items", []):
                 val = m.get("latestReading", {}).get("value")
                 if val is not None:
-                    status = "HIGH" if val >= threshold else "Normal"
-                    levels.append(f"{name}: {val:.2f}m ({status})")
+                    prev_val = prev_levels.get(st_id)
+                    delta = (val - prev_val) if prev_val is not None else 0.0
+                    new_levels[st_id] = val
+                    status = "HIGH" if val >= threshold else ("SURGING" if delta >= 0.20 else "Normal")
+                    delta_str = f" (+{delta:.2f}m)" if delta >= 0.05 else ""
+                    levels.append(f"{name}: {val:.2f}m{delta_str} ({status})")
                     if val >= threshold:
-                        tripwires.append((f"TRIP-RIVER-{st_id}-{datetime.now(timezone.utc).strftime('%Y%m%d%H')}", f"[RIVER SURGE TRIPWIRE] {name} has reached {val}m (Flood threshold: {threshold}m)"))
+                        tripwires.append((f"TRIP-RIVER-{st_id}-{hour_stamp}", f"[RIVER SURGE TRIPWIRE] {name} has reached {val:.2f}m (Flood threshold: {threshold}m)"))
+                    elif delta >= 0.20:
+                        tripwires.append((f"TRIP-RISE-{st_id}-{hour_stamp}", f"[RAPID RISE TRIPWIRE] {name} surged by +{delta:.2f}m since last check (Current: {val:.2f}m)"))
+                    break
         except Exception:
             pass
+    state["river_levels"] = new_levels
     if levels:
         context.append("Rivers & Catchment: " + " | ".join(levels))
 
@@ -157,9 +170,12 @@ def main():
     seen = set(state["seen"])
     new_entries = []
 
+    # 1. Fetch RSS Feeds with strict 15-second network timeout protection
     for source, url in FEEDS.items():
         try:
-            feed = feedparser.parse(url)
+            r = requests.get(url, timeout=15, headers={"User-Agent": "Cumbria-EWS/2.2"})
+            r.raise_for_status()
+            feed = feedparser.parse(r.content)
             for entry in feed.entries[:4]:
                 base_id = entry.get("id") or entry.get("link") or entry.get("title")
                 updated = entry.get("updated") or entry.get("published") or ""
@@ -170,9 +186,11 @@ def main():
         except Exception:
             pass
 
-    telemetry, tripwires = get_telemetry_and_tripwires()
+    telemetry, tripwires = get_telemetry_and_tripwires(state)
+    critical_events = get_cumbria_floods() + get_enwl_power_cuts() + tripwires
+    unseen_critical = [text for uid, text in critical_events if uid not in seen]
 
-    for uid, text in get_cumbria_floods() + get_enwl_power_cuts() + tripwires:
+    for uid, text in critical_events:
         if uid not in seen:
             new_entries.append((uid, text))
 
@@ -231,10 +249,18 @@ def main():
             )
     except Exception as e:
         print(f"Compound analysis error: {e}")
+        # Fail-Safe Bypass: Never drop a hard physical tripwire, flood, or local power cut if AI is unreachable
+        if unseen_critical:
+            fallback_msg = (
+                "WHAT IS HAPPENING:\n" + "\n".join(unseen_critical) +
+                f"\n\nRISK TO CA13 0ZQ (LIVE TELEMETRY):\n{telemetry}\n\n"
+                "WHAT TO DO NOW:\nCheck local conditions immediately (AI summary bypassed due to API timeout)."
+            )
+            send_ntfy(ntfy_topic, "⚠️ HomeGuard EWS Fail-Safe Alert", fallback_msg, priority="urgent")
 
     state["seen"] = list(seen)
     save_state(state)
 
 if __name__ == "__main__":
     main()
-                
+        
