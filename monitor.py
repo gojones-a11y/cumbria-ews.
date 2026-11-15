@@ -78,11 +78,13 @@ def get_telemetry_and_tripwires():
     except Exception:
         context.append("Weather sensor: Temporarily busy (will re-check in 15 mins)")
 
-    # 2. Cockermouth River Gauges & Hard Flood Tripwires
+    # 2. Upstream & Town River Gauges / Hard Flood Tripwires
     stations = {
+        "Cocker (Scalehill Upstream)": ("750160", 0.97),
+        "Bassenthwaite Lake (Castle Howe)": ("751020", 2.07),
         "Derwent (Kingfisher)": ("752020", 1.80),
         "Derwent (Ouse Bridge)": ("751110", 2.10),
-        "River Cocker": ("751690", 1.80)
+        "River Cocker (Town)": ("751690", 1.80)
     }
     levels = []
     for name, (st_id, threshold) in stations.items():
@@ -98,7 +100,7 @@ def get_telemetry_and_tripwires():
         except Exception:
             pass
     if levels:
-        context.append("Rivers: " + " | ".join(levels))
+        context.append("Rivers & Catchment: " + " | ".join(levels))
 
     # 3. NOAA Space Weather / Solar Storm Kp-Index
     try:
@@ -179,8 +181,8 @@ def main():
     if now_utc.weekday() == 6 and now_utc.hour >= 8 and state.get("last_heartbeat") != week_id:
         send_ntfy(
             ntfy_topic,
-            "CA13 0ZQ Weekly EWS Check-In",
-            f"All UK feeds and Cockermouth sensors are active and watching.\n\n{telemetry}",
+            "HomeGuard EWS Weekly Check-In",
+            f"All UK feeds and upstream catchment sensors are active and watching.\n\n{telemetry}",
             priority="default"
         )
         state["last_heartbeat"] = week_id
@@ -201,7 +203,7 @@ def main():
         state["recent_log"].append(text[:200])
 
     payload = (
-        f"LIVE LOCAL TELEMETRY:\n{telemetry}\n\n"
+        f"LIVE LOCAL & CATCHMENT TELEMETRY:\n{telemetry}\n\n"
         f"RECENT 24H CONTEXT:\n{recent_context}\n\n"
         f"NEW INCOMING EVENTS TO ANALYZE:\n{batch_text}"
     )
@@ -220,7 +222,7 @@ def main():
         if result.get("should_alert"):
             send_ntfy(
                 ntfy_topic,
-                result.get("title", "CA13 0ZQ Threat Alert"),
+                result.get("title", "HomeGuard EWS Alert"),
                 result.get("message", batch_text),
                 result.get("priority", "default")
             )
@@ -232,3 +234,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
