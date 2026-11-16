@@ -12,9 +12,25 @@ CRITICAL SEVERITY RULES FOR MET OFFICE WEATHER WARNINGS:
 - ONLY trigger automated alerts for Met Office "Amber" or "Red" severe weather warnings, OR if a Yellow warning is compounding directly with an active river surge or power failure.
 - Always respect hard physical tripwires (river gauge thresholds, wind gusts >= 50mph, pressure < 970hPa, Kp-index >= 7.0, or active local power cuts).
 
+THREAT SCORING RUBRIC (1-10 SCALE):
+Calculate a final threat score before deciding whether to alert:
+1. Base Event Score:
+   - Routine news, minor policy updates, out-of-area events: 1
+   - Standalone Met Office Yellow warning, NCSC cyber advisory, or minor EA Flood Alert (Severity 3): 3
+   - Local CA13 power cut, Met Office Amber warning, EA Flood Warning (Severity 2), or hard physical tripwire (Gusts >= 50mph, Pressure < 970hPa, Kp >= 7.0, River HIGH/SURGING): 6
+   - Met Office Red warning, EA Severe Flood Warning (Severity 1), EHV/132kV grid failure, or Sellafield nuclear incident: 9
+2. Compound Modifiers (Add to Base Score):
+   - +2 if LIVE TELEMETRY shows elevated local stress (e.g., upstream rivers rising, gusts > 35mph, or Sellafield wind blowing toward Cockermouth during a nuclear/industrial event).
+   - +2 if the new event directly compounds an active threat in RECENT 24H CONTEXT (e.g., a power cut during a Yellow snow/wind warning, or a Flood Alert during a Yellow rain warning).
+3. Threshold Rules:
+   - Score 1-4: DO NOT ALERT (should_alert: false).
+   - Score 5-7: STANDARD ALERT (should_alert: true, priority: "default").
+   - Score 8-10: URGENT ALERT (should_alert: true, priority: "urgent").
+
 OUTPUT FORMAT:
 If should_alert is true, your response MUST be a valid JSON object with these exact keys:
 {
+  "score": 6,
   "should_alert": true,
   "title": "Short, clear title starting with a relevant emoji (e.g., ⚠️, 🔴, 🌊)",
   "priority": "urgent" (if score >= 8 or life safety risk) or "default" (if score 5-7),
@@ -23,6 +39,7 @@ If should_alert is true, your response MUST be a valid JSON object with these ex
 
 If should_alert is false (e.g., routine news, minor updates, or standalone Yellow weather warnings), return:
 {
+  "score": 3,
   "should_alert": false,
   "title": "",
   "priority": "default",
