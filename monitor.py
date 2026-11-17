@@ -56,8 +56,8 @@ def get_telemetry_and_tripwires(state):
     context = []
     tripwires = []
 
-    # 1. Sellafield Wind & Cockermouth Weather (with automatic retry)
-    url = "https://api.open-meteo.com/v1/forecast?latitude=54.42,54.66&longitude=-3.50,-3.41&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m,surface_pressure&wind_speed_unit=mph"
+    # 1. Sellafield Wind & Cockermouth Weather (with automatic retry & sea-level pressure)
+    url = "https://api.open-meteo.com/v1/forecast?latitude=54.42,54.66&longitude=-3.50,-3.41&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m,pressure_msl&wind_speed_unit=mph"
     try:
         data = fetch_json(url, timeout=20, retries=3)
         sf = data[0].get("current", {})
@@ -65,7 +65,7 @@ def get_telemetry_and_tripwires(state):
         speed = sf.get("wind_speed_10m", 0)
         direction = sf.get("wind_direction_10m", 0)
         gusts = ck.get("wind_gusts_10m", 0)
-        pressure = ck.get("surface_pressure", 1013)
+        pressure = ck.get("pressure_msl", 1013)
         eta_mins = round((17.5 / speed) * 60) if speed > 1 else 999
         if 165 <= direction <= 220:
             wind_status = f"BLOWING TOWARD COCKERMOUTH ({speed} mph, ~{eta_mins}m travel time)"
@@ -187,80 +187,5 @@ def main():
             pass
 
     telemetry, tripwires = get_telemetry_and_tripwires(state)
-    critical_events = get_cumbria_floods() + get_enwl_power_cuts() + tripwires
-    unseen_critical = [text for uid, text in critical_events if uid not in seen]
-
-    for uid, text in critical_events:
-        if uid not in seen:
-            new_entries.append((uid, text))
-
-    ntfy_topic = os.environ["NTFY_TOPIC"]
-    now_utc = datetime.now(timezone.utc)
-    week_id = now_utc.strftime("%Y-W%W")
-
-    # Sunday Morning Weekly Heartbeat (After 08:00 UTC on Sundays)
-    if now_utc.weekday() == 6 and now_utc.hour >= 8 and state.get("last_heartbeat") != week_id:
-        send_ntfy(
-            ntfy_topic,
-            "HomeGuard EWS Weekly Check-In",
-            f"All UK feeds and upstream catchment sensors are active and watching.\n\n{telemetry}",
-            priority="default"
-        )
-        state["last_heartbeat"] = week_id
-
-    if not new_entries:
-        state["seen"] = list(seen)
-        save_state(state)
-        return
-
-    with open("prompt.txt", "r") as f:
-        system_prompt = f.read()
-
-    batch_text = "\n".join([text for _, text in new_entries])
-    recent_context = "\n".join(state.get("recent_log", [])[-10:]) or "None"
-
-    for uid, text in new_entries:
-        seen.add(uid)
-        state["recent_log"].append(text[:200])
-
-    payload = (
-        f"LIVE LOCAL & CATCHMENT TELEMETRY:\n{telemetry}\n\n"
-        f"RECENT 24H CONTEXT:\n{recent_context}\n\n"
-        f"NEW INCOMING EVENTS TO ANALYZE:\n{batch_text}"
-    )
-
-    try:
-        client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=payload,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                response_mime_type="application/json",
-            ),
-        )
-        result = json.loads(response.text)
-        if result.get("should_alert"):
-            send_ntfy(
-                ntfy_topic,
-                result.get("title", "HomeGuard EWS Alert"),
-                result.get("message", batch_text),
-                result.get("priority", "default")
-            )
-    except Exception as e:
-        print(f"Compound analysis error: {e}")
-        # Fail-Safe Bypass: Never drop a hard physical tripwire, flood, or local power cut if AI is unreachable
-        if unseen_critical:
-            fallback_msg = (
-                "WHAT IS HAPPENING:\n" + "\n".join(unseen_critical) +
-                f"\n\nRISK TO CA13 0ZQ (LIVE TELEMETRY):\n{telemetry}\n\n"
-                "WHAT TO DO NOW:\nCheck local conditions immediately (AI summary bypassed due to API timeout)."
-            )
-            send_ntfy(ntfy_topic, "⚠️ HomeGuard EWS Fail-Safe Alert", fallback_msg, priority="urgent")
-
-    state["seen"] = list(seen)
-    save_state(state)
-
-if __name__ == "__main__":
-    main()
-        
+    critical_
+                            
