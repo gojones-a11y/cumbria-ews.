@@ -10,14 +10,15 @@ from google.genai import types
 FEEDS = {
     "Met Office NW": "https://www.metoffice.gov.uk/public/data/PWSCache/WarningsRSS/Region/nw",
     "Sellafield GOV.UK": "https://www.gov.uk/government/collections/sellafield-ltd-incident-reports-and-notices.atom",
-    "ONR Nuclear Reg": "https://www.onr.org.uk/news/rss.xml",
+    "ONR Nuclear Reg": "https://www.onr.org.uk/rss-news",
     "NCSC Cyber Alerts": "https://www.ncsc.gov.uk/api/1/services/v1/all-rss-feed.xml",
-    "ProtectUK Terror/Sec": "https://www.protectuk.police.uk/rss.xml",
+    "MI5 UK Threat Level": "https://www.mi5.gov.uk/UKThreatLevel/UKThreatLevel.xml",
+    "Home Office Security": "https://www.gov.uk/government/organisations/home-office.atom",
     "UKHSA Health/Bio": "https://www.gov.uk/government/organisations/uk-health-security-agency.atom",
     "DEFRA Animal/Bio": "https://www.gov.uk/government/organisations/department-for-environment-food-rural-affairs.atom",
     "Cabinet Office Crisis": "https://www.gov.uk/government/organisations/cabinet-office.atom",
     "DESNZ Energy Security": "https://www.gov.uk/government/organisations/department-for-energy-security-and-net-zero.atom",
-    "BGS UK Earthquakes": "http://www.earthquakes.bgs.ac.uk/feeds/MhSeismology.xml"
+    "BGS UK Earthquakes": "https://earthquakes.bgs.ac.uk/feeds/MhSeismology.xml"
 }
 
 STATE_FILE = "seen_alerts.json"
@@ -25,7 +26,7 @@ STATE_FILE = "seen_alerts.json"
 def fetch_json(url, timeout=20, retries=3):
     for attempt in range(retries):
         try:
-            r = requests.get(url, timeout=timeout, headers={"User-Agent": "Cumbria-EWS/2.3"})
+            r = requests.get(url, timeout=timeout, headers={"User-Agent": "Cumbria-EWS/2.4"})
             r.raise_for_status()
             return r.json()
         except Exception as e:
@@ -182,7 +183,7 @@ def main():
     # 1. Fetch RSS Feeds with strict 15-second network timeout protection
     for source, url in FEEDS.items():
         try:
-            r = requests.get(url, timeout=15, headers={"User-Agent": "Cumbria-EWS/2.3"})
+            r = requests.get(url, timeout=15, headers={"User-Agent": "Cumbria-EWS/2.4"})
             r.raise_for_status()
             feed = feedparser.parse(r.content)
             for entry in feed.entries[:4]:
@@ -284,4 +285,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+                
