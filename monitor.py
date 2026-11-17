@@ -25,7 +25,7 @@ STATE_FILE = "seen_alerts.json"
 def fetch_json(url, timeout=20, retries=3):
     for attempt in range(retries):
         try:
-            r = requests.get(url, timeout=timeout, headers={"User-Agent": "Cumbria-EWS/2.2"})
+            r = requests.get(url, timeout=timeout, headers={"User-Agent": "Cumbria-EWS/2.3"})
             r.raise_for_status()
             return r.json()
         except Exception as e:
@@ -81,7 +81,7 @@ def get_telemetry_and_tripwires(state):
 
     # 2. Upstream & Town River Gauges / Hard Flood & Velocity Tripwires
     stations = {
-        "Cocker (Scalehill Upstream)": ("750160", 0.97),
+        "Cocker (Scalehill Upstream)": ("751612", 0.97),
         "Bassenthwaite Lake (Castle Howe)": ("751020", 2.07),
         "Derwent (Kingfisher)": ("752020", 1.80),
         "Derwent (Ouse Bridge)": ("751110", 2.10),
@@ -96,6 +96,8 @@ def get_telemetry_and_tripwires(state):
         try:
             r = fetch_json(f"https://environment.data.gov.uk/flood-monitoring/id/stations/{st_id}/measures", timeout=15, retries=2)
             for m in r.get("items", []):
+                if m.get("parameter") != "level":
+                    continue
                 val = m.get("latestReading", {}).get("value")
                 if val is not None:
                     prev_val = prev_levels.get(st_id)
@@ -149,17 +151,24 @@ def get_enwl_power_cuts():
 
 def get_cumbria_floods():
     url = "https://environment.data.gov.uk/flood-monitoring/id/floods?county=Cumbria"
-    alerts = []
+    all_alerts = []
+    local_critical = []
+    local_keywords = ("cocker", "derwent", "cockermouth", "bassenthwaite", "keswick", "workington", "marron", "crummock", "buttermere", "allerdale")
     try:
         r = fetch_json(url, timeout=15, retries=2)
         for item in r.get("items", []):
             sev = item.get("severityLevel", 4)
             if sev <= 3:
                 uid = f"EA-{item.get('floodAreaID')}-{sev}"
-                alerts.append((uid, f"[EA Flood Severity {sev}] {item.get('description', '')}: {item.get('message', '')[:350]}"))
+                desc = item.get("description", "")
+                msg = item.get("message", "")[:350]
+                text = f"[EA Flood Severity {sev}] {desc}: {msg}"
+                all_alerts.append((uid, text))
+                if sev <= 2 or any(k in (desc + " " + msg).lower() for k in local_keywords):
+                    local_critical.append((uid, text))
     except Exception:
         pass
-    return alerts
+    return all_alerts, local_critical
 
 def send_ntfy(topic, title, message, priority="default"):
     headers = {"Title": title.encode("utf-8"), "Priority": priority, "Tags": "warning,uk"}
@@ -173,7 +182,7 @@ def main():
     # 1. Fetch RSS Feeds with strict 15-second network timeout protection
     for source, url in FEEDS.items():
         try:
-            r = requests.get(url, timeout=15, headers={"User-Agent": "Cumbria-EWS/2.2"})
+            r = requests.get(url, timeout=15, headers={"User-Agent": "Cumbria-EWS/2.3"})
             r.raise_for_status()
             feed = feedparser.parse(r.content)
             for entry in feed.entries[:4]:
@@ -187,5 +196,92 @@ def main():
             pass
 
     telemetry, tripwires = get_telemetry_and_tripwires(state)
-    critical_
-                            
+    all_floods, local_floods = get_cumbria_floods()
+    power_cuts = get_enwl_power_cuts()
+
+    for uid, text in all_floods + power_cuts + tripwires:
+        if uid not in seen:
+            new_entries.append((uid, text))
+
+    unseen_critical = [text for uid, text in (local_floods + power_cuts + tripwires) if uid not in seen]
+
+    ntfy_topic = os.environ["NTFY_TOPIC"]
+    now_utc = datetime.now(timezone.utc)
+    week_id = now_utc.strftime("%Y-W%W")
+
+    # Sunday Morning Weekly Heartbeat (After 08:00 UTC on Sundays)
+    if now_utc.weekday() == 6 and now_utc.hour >= 8 and state.get("last_heartbeat") != week_id:
+        send_ntfy(
+            ntfy_topic,
+            "HomeGuard EWS Weekly Check-In",
+            f"All UK feeds and upstream catchment sensors are active and watching.\n\n{telemetry}",
+            priority="default"
+        )
+        state["last_heartbeat"] = week_id
+
+    if not new_entries:
+        state["seen"] = list(seen)
+        save_state(state)
+        return
+
+    with open("prompt.txt", "r") as f:
+        system_prompt = f.read()
+
+    batch_text = "\n".join([text for _, text in new_entries])
+    recent_context = "\n".join(state.get("recent_log", [])[-10:]) or "None"
+
+    for uid, text in new_entries:
+        seen.add(uid)
+        state["recent_log"].append(text[:200])
+
+    payload = (
+        f"LIVE LOCAL & CATCHMENT TELEMETRY:\n{telemetry}\n\n"
+        f"RECENT 24H CONTEXT:\n{recent_context}\n\n"
+        f"NEW INCOMING EVENTS TO ANALYZE:\n{batch_text}"
+    )
+
+    try:
+        client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+        response = None
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=payload,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        response_mime_type="application/json",
+                    ),
+                )
+                break
+            except Exception as api_err:
+                if attempt == 1:
+                    raise api_err
+                time.sleep(3)
+
+        clean_json = response.text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        result = json.loads(clean_json)
+        if result.get("should_alert"):
+            send_ntfy(
+                ntfy_topic,
+                result.get("title", "HomeGuard EWS Alert"),
+                result.get("message", batch_text),
+                result.get("priority", "default")
+            )
+    except Exception as e:
+        print(f"Compound analysis error: {e}")
+        # Fail-Safe Bypass: Never drop a hard physical tripwire, local flood, or local power cut if AI is unreachable
+        if unseen_critical:
+            fallback_msg = (
+                "WHAT IS HAPPENING:\n" + "\n".join(unseen_critical) +
+                f"\n\nRISK TO CA13 0ZQ (LIVE TELEMETRY):\n{telemetry}\n\n"
+                "WHAT TO DO NOW:\nCheck local conditions immediately (AI summary bypassed due to API timeout)."
+            )
+            send_ntfy(ntfy_topic, "⚠️ HomeGuard EWS Fail-Safe Alert", fallback_msg, priority="urgent")
+
+    state["seen"] = list(seen)
+    save_state(state)
+
+if __name__ == "__main__":
+    main()
+    
